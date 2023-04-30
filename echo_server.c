@@ -10,10 +10,11 @@
 #define TIMEOUT 5000
 #define BATCH 10
 
-void do_iou(int listening_sock){
+void do_iou(){
     
     char buffer[1024];
     int len = sizeof(struct sockaddr_in);
+    struct sockaddr_in server;
 
 
     struct io_uring_sqe *sqe;
@@ -21,8 +22,28 @@ void do_iou(int listening_sock){
 
     io_uring_queue_init(BATCH, &ring, 0);
 
+    listening_sock = socket(AF_INET, SOCK_STREAM, 0);
 
+    if(listening_sock < 0){
+        perror("Cannot create socket");
+        exit(1);
+    }
     
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(port);
+    
+    if(bind(listening_sock, (struct sockaddr *)&server, len) < 0){
+        perror("Cannot bind socket");
+        exit(2);
+    }
+
+
+
+
+    io_uring_prep_multishot_accept(sqe, listening_sock, &server, &len, NULL)   
+
+ 
     
 }
 
@@ -162,15 +183,17 @@ int main(int argc, char *argv[]){
             do_epoll(listening_sock);
             break;
         case IO_URING:
-            do_iou(listening_sock);
+            close(listening_sock);
+            listening_sock = -1;
+            do_iou();
             break;
         default:
             perror("Mode not implemented");
             exit(4);
     }
 
- 
-    close(listening_sock);
+    if(listening_sock != -1)
+        close(listening_sock);
 
 
 }
