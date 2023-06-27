@@ -24,29 +24,61 @@ void do_iou(int listening_sock, struct sockaddr *server){
     sqe = io_uring_get_sqe(&ring);
 
 
-    io_uring_prep_multishot_accept(sqe, listening_sock, server, &len, 0);   
+    io_uring_prep_accept(sqe, listening_sock, server, &len, 0);   
     io_uring_sqe_set_data64 (sqe, listening_sock);
 
     io_uring_submit(&ring);
 
     int new_sock;
-
+    int sock;
     while(1){
-        io_uring_wait_cqe(&ring, &cqe);
+        if(io_uring_wait_cqe(&ring, &cqe) < 0){
+            perror("Waiting for cqe failed");
+            exit(22);
+        }
 
         if(cqe->user_data == listening_sock){
             new_sock = cqe->res;
+            printf("New Socket!\n");
             if(new_sock < 0){
+                errno = -new_sock;
                 perror("Failed to accept new socket");
                 exit(21);
             }
 
             sqe = io_uring_get_sqe(&ring);
+            io_uring_prep_accept(sqe, listening_sock, server, &len, 0);   
+            io_uring_sqe_set_data64 (sqe, listening_sock);
 
+            sqe = io_uring_get_sqe(&ring);
+            io_uring_prep_recv(sqe, new_sock, buffer, 1024, 0);   
+            io_uring_sqe_set_data64 (sqe, new_sock);
+
+            io_uring_submit(&ring);
+
+        }else if(cqe->user_data != 1){
+
+            printf("Received Message!\n");
+            
+            if(cqe->res == -1){
+                perror("Failed to receive");
+                exit(23);
+            }
+
+            sqe = io_uring_get_sqe(&ring);
+            io_uring_prep_send(sqe, cqe->user_data, buffer, 1024, 0);   
+            io_uring_sqe_set_data64 (sqe, 1);
+
+            sqe = io_uring_get_sqe(&ring);
+            io_uring_prep_recv(sqe, new_sock, buffer, 1024, 0);   
+
+            io_uring_submit(&ring);
 
         }else{
-
+            printf("Msg was sent!\n");
         }
+
+        io_uring_cqe_seen(&ring, cqe);
     }
 
  
@@ -118,14 +150,24 @@ void do_epoll(int listening_sock){
                 //do read and echo
 
                 //read everything into buffer
-                bytes = read(events[i].data.fd, buffer, 1024);
+                bytes = recv(events[i].data.fd, buffer, 1024, 0);
+                //bytes = read(events[i].data.fd, buffer, 1024);
                 if(bytes < 0){
+                    epoll_ctl(epoll, EPOLL_CTL_DEL, events[i].data.fd, NULL);
+                    shutdown(events[i].data.fd, SHUT_RDWR);
+                    continue;
                     perror("Read Failed");
                     exit(9);
                 }
 
+
                 //write everything back to socket
-                if( write(events[i].data.fd, buffer, 1024) < 0 ){
+                if( send(events[i].data.fd, buffer, bytes, 0) < 0 ){
+                //if( write(events[i].data.fd, buffer, bytes) < 0 ){
+                    epoll_ctl(epoll, EPOLL_CTL_DEL, events[i].data.fd, NULL);
+                    shutdown(events[i].data.fd, SHUT_RDWR);
+                    continue;
+                    printf("Bytes: %d\n", bytes);
                     perror("Write Failed");
                     exit(10);
                 }
