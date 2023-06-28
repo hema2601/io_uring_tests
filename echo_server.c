@@ -32,6 +32,7 @@ void do_iou(int listening_sock, struct sockaddr *server){
     int new_sock;
     int sock;
     while(1){
+
         if(io_uring_wait_cqe(&ring, &cqe) < 0){
             perror("Waiting for cqe failed");
             exit(22);
@@ -58,7 +59,7 @@ void do_iou(int listening_sock, struct sockaddr *server){
 
         }else if(cqe->user_data != 1){
 
-            printf("Received Message!\n");
+            //printf("Received Message: %d!\n", cqe->res);
             
             if(cqe->res == -1){
                 perror("Failed to receive");
@@ -66,16 +67,17 @@ void do_iou(int listening_sock, struct sockaddr *server){
             }
 
             sqe = io_uring_get_sqe(&ring);
-            io_uring_prep_send(sqe, cqe->user_data, buffer, 1024, 0);   
+            io_uring_prep_send(sqe, cqe->user_data, buffer, cqe->res, 0);   
             io_uring_sqe_set_data64 (sqe, 1);
 
             sqe = io_uring_get_sqe(&ring);
             io_uring_prep_recv(sqe, new_sock, buffer, 1024, 0);   
+            io_uring_sqe_set_data64 (sqe, cqe->user_data);
 
             io_uring_submit(&ring);
 
         }else{
-            printf("Msg was sent!\n");
+           // printf("Msg was sent!\n");
         }
 
         io_uring_cqe_seen(&ring, cqe);
@@ -151,25 +153,18 @@ void do_epoll(int listening_sock){
 
                 //read everything into buffer
                 bytes = recv(events[i].data.fd, buffer, 1024, 0);
-                //bytes = read(events[i].data.fd, buffer, 1024);
                 if(bytes < 0){
                     epoll_ctl(epoll, EPOLL_CTL_DEL, events[i].data.fd, NULL);
                     shutdown(events[i].data.fd, SHUT_RDWR);
                     continue;
-                    perror("Read Failed");
-                    exit(9);
                 }
 
 
                 //write everything back to socket
                 if( send(events[i].data.fd, buffer, bytes, 0) < 0 ){
-                //if( write(events[i].data.fd, buffer, bytes) < 0 ){
                     epoll_ctl(epoll, EPOLL_CTL_DEL, events[i].data.fd, NULL);
                     shutdown(events[i].data.fd, SHUT_RDWR);
                     continue;
-                    printf("Bytes: %d\n", bytes);
-                    perror("Write Failed");
-                    exit(10);
                 }
 
             }
