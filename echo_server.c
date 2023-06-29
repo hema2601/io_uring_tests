@@ -10,10 +10,18 @@
 #define TIMEOUT 5000
 #define BATCH 10
 
-void do_iou(int listening_sock, struct sockaddr *server){
+#define NUM_BUF 8192
+#define MSG_LEN 1024
+
+
+enum req_type {ACCEPT, SEND, RECV, BUF};
+
+char buffers[NUM_BUF][MSG_LEN];
+void do_iou(uint32_t listening_sock, struct sockaddr *server){
     
-    char buffer[1024];
     int len = sizeof(struct sockaddr_in);
+
+    int group_id = 9876;
 
     struct io_uring_sqe *sqe;
     struct io_uring_cqe *cqe;
@@ -21,9 +29,23 @@ void do_iou(int listening_sock, struct sockaddr *server){
 
     io_uring_queue_init(BATCH, &ring, 0);
 
+
+    
+
     sqe = io_uring_get_sqe(&ring);
+    io_uring_prep_provide_buffers(sqe, buffers, MSG_LEN, NUM_BUF, group_id, 0);
+    io_uring_submit(&ring);
 
+    io_uring_wait_cqe(&ring, &cqe);
+    
+    if(cqe->res < 0){
+        perror("Providing buffers failed");
+        exit(22);
+    }
 
+    io_uring_cqe_seen(&ring, cqe);
+
+    sqe = io_uring_get_sqe(&ring);
     io_uring_prep_accept(sqe, listening_sock, server, &len, 0);   
     io_uring_sqe_set_data64 (sqe, listening_sock);
 
@@ -31,6 +53,7 @@ void do_iou(int listening_sock, struct sockaddr *server){
 
     int new_sock;
     int sock;
+    uint32_t bid;
     while(1){
 
         if(io_uring_wait_cqe(&ring, &cqe) < 0){
@@ -38,48 +61,73 @@ void do_iou(int listening_sock, struct sockaddr *server){
             exit(22);
         }
 
-        if(cqe->user_data == listening_sock){
-            new_sock = cqe->res;
-            printf("New Socket!\n");
-            if(new_sock < 0){
-                errno = -new_sock;
-                perror("Failed to accept new socket");
-                exit(21);
-            }
 
-            sqe = io_uring_get_sqe(&ring);
-            io_uring_prep_accept(sqe, listening_sock, server, &len, 0);   
-            io_uring_sqe_set_data64 (sqe, listening_sock);
+        switch(cqe->user_data >> 16){
+            case ACCEPT:
+                new_sock = cqe->res;
 
-            sqe = io_uring_get_sqe(&ring);
-            io_uring_prep_recv(sqe, new_sock, buffer, 1024, 0);   
-            io_uring_sqe_set_data64 (sqe, new_sock);
+                if(new_sock < 0){
+                    errno = -new_sock;
+                    perror("Failed to accept new socket");
+                    exit(21);
+                }
 
-            io_uring_submit(&ring);
+                sqe = io_uring_get_sqe(&ring);
+                io_uring_prep_accept(sqe, cqe->user_data & 0xffff, server, &len, 0);   
+                io_uring_sqe_set_data64 (sqe, ACCEPT << 16 | (cqe->user_data & 0xffff));
 
-        }else if(cqe->user_data != 1){
-
-            //printf("Received Message: %d!\n", cqe->res);
+                sqe = io_uring_get_sqe(&ring);
+                io_uring_prep_recv(sqe, new_sock, NULL, MSG_LEN, 0);   
+                io_uring_sqe_set_flags(sqe, IOSQE_BUFFER_SELECT);
+                sqe->buf_group = group_id;
+                io_uring_sqe_set_data64 (sqe, RECV << 16 | ((uint64_t)new_sock&0xffff));
+    //            io_uring_submit(&ring);
+                
+                break;
             
-            if(cqe->res == -1){
-                perror("Failed to receive");
-                exit(23);
-            }
+            case RECV:
 
-            sqe = io_uring_get_sqe(&ring);
-            io_uring_prep_send(sqe, cqe->user_data, buffer, cqe->res, 0);   
-            io_uring_sqe_set_data64 (sqe, 1);
+                if(cqe->res == -1){
+                    perror("Failed to receive");
+                    exit(23);
+                }
 
-            sqe = io_uring_get_sqe(&ring);
-            io_uring_prep_recv(sqe, new_sock, buffer, 1024, 0);   
-            io_uring_sqe_set_data64 (sqe, cqe->user_data);
+                if(cqe->flags & IORING_CQE_F_BUFFER){
 
-            io_uring_submit(&ring);
+                    bid = cqe->flags >> 16;
 
-        }else{
-           // printf("Msg was sent!\n");
+                }else{
+                    printf("Help, buffer wasnt provided... Flags: %d\n", cqe->flags);
+                    exit(25);
+                }
+
+
+                sqe = io_uring_get_sqe(&ring);
+                io_uring_prep_send(sqe, cqe->user_data & 0xffff, buffers[bid], cqe->res, 0);   
+                io_uring_sqe_set_data64 (sqe, SEND << 16 | (bid & 0xffff));
+
+                sqe = io_uring_get_sqe(&ring);
+                io_uring_prep_recv(sqe, cqe->user_data & 0xffff, NULL, MSG_LEN, 0);   
+                io_uring_sqe_set_flags(sqe, IOSQE_BUFFER_SELECT);
+                sqe->buf_group = group_id;
+                io_uring_sqe_set_data64 (sqe, RECV << 16 | (cqe->user_data&0xffff));
+
+  //              io_uring_submit(&ring);
+                break;
+            case SEND:
+
+                sqe = io_uring_get_sqe(&ring);
+                io_uring_prep_provide_buffers(sqe, buffers[cqe->user_data&0xffff], MSG_LEN, 1, group_id, 0);
+                io_uring_sqe_set_data64 (sqe, BUF << 16 );
+//                io_uring_submit(&ring);
+                break;
+            case BUF:
+                break;
+            default:
+                break;
+
         }
-
+        io_uring_submit(&ring);
         io_uring_cqe_seen(&ring, cqe);
     }
 
@@ -89,7 +137,7 @@ void do_iou(int listening_sock, struct sockaddr *server){
 
 void do_epoll(int listening_sock){
 
-    char buffer[1024];
+    char buffer[MSG_LEN];
     int len = sizeof(struct sockaddr_in);
 
     int epoll = epoll_create(MAX_EVENTS);
@@ -152,7 +200,7 @@ void do_epoll(int listening_sock){
                 //do read and echo
 
                 //read everything into buffer
-                bytes = recv(events[i].data.fd, buffer, 1024, 0);
+                bytes = recv(events[i].data.fd, buffer, MSG_LEN, 0);
                 if(bytes < 0){
                     epoll_ctl(epoll, EPOLL_CTL_DEL, events[i].data.fd, NULL);
                     shutdown(events[i].data.fd, SHUT_RDWR);
@@ -187,8 +235,8 @@ int main(int argc, char *argv[]){
     int listening_sock;
     struct sockaddr_in server;
     int len;
-    int port = 1234;
-    char buffer[1024];
+    int port = 1213;
+    char buffer[MSG_LEN];
 
     if(argc < 2){
         printf("Specify Mode: 1 = EPOLL, 2 = IO_URING\nUsage: %s <mode>\n", argv[0]);
