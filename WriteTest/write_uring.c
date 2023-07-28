@@ -7,8 +7,8 @@
 #define QUEUE_DEPTH 1024
 
 
-#define TOTAL BATCH * 1000000
-#define BATCH 100
+#define TOTAL BATCH * 1000
+#define BATCH 1000
 
 
 int main(int argc, char *argv[]){
