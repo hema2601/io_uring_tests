@@ -108,7 +108,7 @@ struct ctx{
     struct event_handler *ev;
     int total_requests;
     int fd;
-    char write_buffer[8];
+    char *write_buffer;
     char write_len;
     int debug_flags;
     struct debug_state ds; 
@@ -152,7 +152,8 @@ void print_help(){
             \t-v\tspecify verbosity (default: ERROR)\n \
             \t\t0 - SUPPRESS, 1 - FATAL, 2 - ERROR, 3 - WARN, 4 - DEBUG\n \
             \t-T\tprint time from initialization to end\n \
-            \t-j\tprint measuring output as json\n ");
+            \t-j\tprint measuring output as json\n \
+            \t-s\tset write size in bytes (default: 6)");
 }
 
 
@@ -165,7 +166,7 @@ int init_ctx(struct ctx *my_ctx, int argc, char *argv[]){
 
     //set defaults
     enum ev_types ev = IO_URING;
-    memcpy(my_ctx->write_buffer, "Hello\n", 6);
+    //memcpy(my_ctx->write_buffer, "Hello\n", 6);
     my_ctx->write_len = 6;
     my_ctx->total_requests = 10000; 
     my_ctx->debug_flags = 0;
@@ -173,11 +174,12 @@ int init_ctx(struct ctx *my_ctx, int argc, char *argv[]){
     my_ctx->json = 0;
     int batch = 10;
     int min_completions = 1;
+    int write_len = 6;
     char filename[256] = "file";
 
     
     //parse options
-    while((opt = getopt(argc, argv, "ht:r:b:c:pPoOf:ev:Tj")) != -1){
+    while((opt = getopt(argc, argv, "ht:r:b:c:pPoOf:ev:Tjs:")) != -1){
         switch(opt){
             case 'h':
                 print_help();
@@ -190,6 +192,9 @@ int init_ctx(struct ctx *my_ctx, int argc, char *argv[]){
                 break;
             case 'b':
                 batch = atoi(optarg);
+                break;
+            case 's':
+                write_len = atoi(optarg);
                 break;
             case 'c':
                 min_completions = atoi(optarg);
@@ -229,6 +234,10 @@ int init_ctx(struct ctx *my_ctx, int argc, char *argv[]){
     }
 
 
+    my_ctx->write_buffer = (char*)calloc(sizeof(char), write_len + 2);
+
+    memcpy(my_ctx->write_buffer, "a", write_len);
+    my_ctx->write_buffer[write_len] = '\0';
 
 
  
