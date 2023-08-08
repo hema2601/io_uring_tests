@@ -93,14 +93,19 @@ struct min_max_avg{
     int cnt;
 };
 
+struct plot_data{
+    int plot_count;
+    int plot_size;
+    int *plot_array;
+};
 
 struct debug_state{
 
     int pending_requests;
     struct min_max_avg inflight;
     struct min_max_avg completions;
-    int *inflight_plot;
-    int *completions_plot;
+    struct plot_data inflight_plot;
+    struct plot_data completions_plot;
     clock_t begin;
 };
 
@@ -116,8 +121,38 @@ struct ctx{
     int json;
 };
 
+void plot_data_init(struct plot_data *pd);
+void add_plot_data(struct plot_data *pd, int value);
+void print_plot_data_json(char *name, struct plot_data *pd);
+
+void plot_data_init(struct plot_data *pd){
+    pd->plot_count = 0;
+    pd->plot_size = 0;
+    pd->plot_array = NULL;
+}
+void add_plot_data(struct plot_data *pd, int value){
+    pd->plot_array[pd->plot_count++] = value;
+}
+void print_plot_data_json(char *name, struct plot_data *pd){
+    printf("\"%s\": {\"Type\" : 2, \"Value\" : [", name);
+
+    int is_first = 1;
+
+    for(int i = 0; i < pd->plot_count; i++){
+        if(!is_first)   printf(", ");
+        is_first = 0;
+        printf("%d", pd->plot_array[i]);
+    }
+
+    printf("] }");
+
+    //[TODO] Now actually use this function
+    
+}
+
 void mma_init(struct min_max_avg *mma);
 void mma_compute_next(struct min_max_avg *mma, int value);
+void print_mma_json(char *name, struct min_max_avg mma);
 
 void mma_init(struct min_max_avg *mma){
     mma->cnt = 0;
@@ -133,6 +168,11 @@ void mma_compute_next(struct min_max_avg *mma, int value){
 
     if(value > mma->max)    mma->max = value;
     if(value < mma->min)    mma->min = value;
+
+}
+
+void print_mma_json(char *name, struct min_max_avg mma){
+    printf("\"%s\": {\"Type\" : 1, \"Value\" : [%lf, %d, %d, %d]}", name, mma.avg, mma.min, mma.max, mma.cnt);
 
 }
 
@@ -153,7 +193,7 @@ void print_help(){
             \t\t0 - SUPPRESS, 1 - FATAL, 2 - ERROR, 3 - WARN, 4 - DEBUG\n \
             \t-T\tprint time from initialization to end\n \
             \t-j\tprint measuring output as json\n \
-            \t-s\tset write size in bytes (default: 6)");
+            \t-s\tset write size in bytes (default: 6)\n");
 }
 
 
@@ -286,8 +326,8 @@ int init_ctx(struct ctx *my_ctx, int argc, char *argv[]){
     my_ctx->ds.pending_requests  = 0;
     mma_init(&my_ctx->ds.inflight);
     mma_init(&my_ctx->ds.completions);
-    my_ctx->ds.inflight_plot = NULL;
-    my_ctx->ds.completions_plot = NULL;
+    plot_data_init(&my_ctx->ds.inflight_plot);
+    plot_data_init(&my_ctx->ds.completions_plot);
     
     if(my_ctx->debug_flags & DBG_TIMER)
         my_ctx->ds.begin = clock();
@@ -326,8 +366,8 @@ int finalize_ctx(struct ctx *my_ctx){
         goto failed;
     }
 
-    if(my_ctx->ds.inflight_plot) free(my_ctx->ds.inflight_plot);
-    if(my_ctx->ds.completions_plot) free(my_ctx->ds.completions_plot);
+    if(my_ctx->ds.inflight_plot.plot_array) free(my_ctx->ds.inflight_plot.plot_array);
+    if(my_ctx->ds.completions_plot.plot_array) free(my_ctx->ds.completions_plot.plot_array);
 
     free(my_ctx);
 
@@ -362,6 +402,7 @@ int io_uring_init(struct ctx *my_ctx, void *init_args){
 
     struct io_uring_params params;
     memset (&params, 0, sizeof params);
+    //params.flags = (IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_IOPOLL);
     params.flags = (IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
 
     int err = io_uring_queue_init_params (QUEUE_DEPTH, ring, &params);
@@ -388,18 +429,24 @@ int io_uring_init(struct ctx *my_ctx, void *init_args){
     }   
 
     if(my_ctx->debug_flags & DBG_INFLIGHT_PLOT){
-        my_ctx->ds.inflight_plot = (int*)malloc(sizeof(int) * (my_ctx->total_requests / st->batch_size));
-        if(!my_ctx->ds.inflight_plot){
+
+        int plot_size = my_ctx->total_requests / st->batch_size;
+        my_ctx->ds.inflight_plot.plot_array = (int*)malloc(sizeof(int) * plot_size);
+        if(!my_ctx->ds.inflight_plot.plot_array){
             debug_print(FATAL, my_ctx->dbg_lvl, "Out Of Memory\n");
             goto failed;
         }
+        my_ctx->ds.inflight_plot.plot_size = plot_size;
     }
     if(my_ctx->debug_flags & DBG_COMPLETIONS_PLOT){
-        my_ctx->ds.completions_plot = (int*)malloc(sizeof(int) * (my_ctx->total_requests / st->batch_size));
-        if(!my_ctx->ds.completions_plot){
+        int plot_size = my_ctx->total_requests / st->batch_size;
+        my_ctx->ds.completions_plot.plot_array = (int*)malloc(sizeof(int) * plot_size);
+        if(!my_ctx->ds.completions_plot.plot_array){
             debug_print(FATAL, my_ctx->dbg_lvl, "Out Of Memory\n");
             goto failed;
         }
+        my_ctx->ds.completions_plot.plot_size = plot_size;
+        
     }
 
  
@@ -412,8 +459,8 @@ int io_uring_init(struct ctx *my_ctx, void *init_args){
 failed:
     if(st)      free(st);
     if(ring)    free(ring);
-    if(my_ctx->ds.inflight_plot) free(my_ctx->ds.inflight_plot);
-    if(my_ctx->ds.completions_plot) free(my_ctx->ds.completions_plot);
+    if(my_ctx->ds.inflight_plot.plot_array) free(my_ctx->ds.inflight_plot.plot_array);
+    if(my_ctx->ds.completions_plot.plot_array) free(my_ctx->ds.completions_plot.plot_array);
     return -1;
 }
 
@@ -470,6 +517,8 @@ int io_uring_issue(struct ctx *my_ctx){
 
       if(cqe->res < 0){
         debug_print(ERROR, my_ctx->dbg_lvl, "CQE returned non-zero result\n");
+        errno = -cqe->res;
+        perror("CQE Failed");
       }
       count++;
     }
@@ -481,13 +530,15 @@ int io_uring_issue(struct ctx *my_ctx){
     //printf("Pending:\t%d\nCompleted:\t%d\n", *pending, count);
 
     if(my_ctx->debug_flags & DBG_INFLIGHT_PLOT){
-        my_ctx->ds.inflight_plot[my_ctx->ds.inflight.cnt] = *pending;
+        add_plot_data(&my_ctx->ds.inflight_plot, *pending);
+        //my_ctx->ds.inflight_plot[my_ctx->ds.inflight_plot.plot_count++] = *pending;
     }
     if(my_ctx->debug_flags & DBG_INFLIGHT){
         mma_compute_next(&my_ctx->ds.inflight, *pending);
     }
     if(my_ctx->debug_flags & DBG_COMPLETIONS_PLOT){
-        my_ctx->ds.completions_plot[my_ctx->ds.completions.cnt] = count;
+        add_plot_data(&my_ctx->ds.completions_plot, count);
+        //my_ctx->ds.completions_plot[my_ctx->ds.completions.cnt] = count;
     }
     if(my_ctx->debug_flags & DBG_COMPLETIONS){
         mma_compute_next(&my_ctx->ds.completions, count);
@@ -561,7 +612,7 @@ void print_debug_info(struct ctx *my_ctx){
         
         if(my_ctx->debug_flags & DBG_PENDING){
             if(my_ctx->ev->type == IO_URING){
-                printf("\"Pending\":%d", my_ctx->ds.pending_requests);
+                printf("\"Pending\" : %d", my_ctx->ds.pending_requests);
                 if(tmp ^ DBG_PENDING)
                     printf(", ");
             }
@@ -570,7 +621,8 @@ void print_debug_info(struct ctx *my_ctx){
         }
         if(my_ctx->debug_flags & DBG_INFLIGHT){
             if(my_ctx->ev->type == IO_URING){
-                printf("\"Inflight Packets\":{\"avg\":%lf, \"min\":%d, \"max\":%d, \"cnt\":%d}", my_ctx->ds.inflight.avg, my_ctx->ds.inflight.min, my_ctx->ds.inflight.max, my_ctx->ds.inflight.cnt);
+                print_mma_json("Inflight Packets", my_ctx->ds.inflight);
+                //printf("\"Inflight Packets\":{\"avg\":%lf, \"min\":%d, \"max\":%d, \"cnt\":%d}", my_ctx->ds.inflight.avg, my_ctx->ds.inflight.min, my_ctx->ds.inflight.max, my_ctx->ds.inflight.cnt);
                 if(tmp ^ DBG_INFLIGHT)
                     printf(", ");
             }
@@ -580,18 +632,35 @@ void print_debug_info(struct ctx *my_ctx){
         
         if(my_ctx->debug_flags & DBG_COMPLETIONS){
             if(my_ctx->ev->type == IO_URING){
-                printf("\"Completions\":{\"avg\":%lf, \"min\":%d, \"max\":%d, \"cnt\":%d}", my_ctx->ds.completions.avg, my_ctx->ds.completions.min, my_ctx->ds.completions.max, my_ctx->ds.completions.cnt);
+                print_mma_json("Completions", my_ctx->ds.completions);
+                //printf("\"Completions\":{\"avg\":%lf, \"min\":%d, \"max\":%d, \"cnt\":%d}", my_ctx->ds.completions.avg, my_ctx->ds.completions.min, my_ctx->ds.completions.max, my_ctx->ds.completions.cnt);
                 if(tmp ^ DBG_COMPLETIONS)
                     printf(", ");
             }
             tmp ^= DBG_COMPLETIONS;
         }
         if(my_ctx->debug_flags & DBG_TIMER){
-            printf("\"Execution Time\":%lf", (double)(clock() - my_ctx->ds.begin) / CLOCKS_PER_SEC);
+            printf("\"Execution Time\" : %lf", (double)(clock() - my_ctx->ds.begin) / CLOCKS_PER_SEC);
             if(tmp ^ DBG_TIMER){
                 printf(", ");
             }
             tmp ^= DBG_TIMER;
+        }
+
+        if(my_ctx->debug_flags & DBG_COMPLETIONS_PLOT){
+            print_plot_data_json("Completion Plot", &my_ctx->ds.completions_plot);
+            if(tmp ^ DBG_COMPLETIONS_PLOT){
+                printf(", ");
+            }
+            tmp ^= DBG_COMPLETIONS_PLOT;
+        }
+        
+        if(my_ctx->debug_flags & DBG_INFLIGHT_PLOT){
+            print_plot_data_json("Inflight Plot", &my_ctx->ds.inflight_plot);
+            if(tmp ^ DBG_INFLIGHT_PLOT){
+                printf(", ");
+            }
+            tmp ^= DBG_INFLIGHT_PLOT;
         }
         printf("}");
 
